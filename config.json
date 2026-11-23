@@ -1,0 +1,26 @@
+{
+  "mode": "auto",
+  "fallback_verdict": "allow",
+  "unmapped_tool_verdict": "allow",
+  "rules": {
+    "restrict": [],
+    "allow": []
+  },
+  "paths": {
+    "outside_read": "allow",
+    "outside_write": "restrict",
+    "no_access": [],
+    "read_only": [],
+    "allowed": []
+  },
+  "tier2": {
+    "enabled": true,
+    "provider": "typesafe",
+    "timeout_ms": 3500,
+    "model": "jev-latest"
+  },
+  "telemetry": {
+    "enabled": true,
+    "log_dir": "logs"
+  }
+}

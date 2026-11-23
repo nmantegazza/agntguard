@@ -1,0 +1,45 @@
+{
+  "name": "agntguard",
+  "version": "0.1.0",
+  "description": "Unified permission engine for coding agents (Antigravity, OpenCode, Pi)",
+  "author": "NMantegazza",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NMantegazza/agntguard.git"
+  },
+  "keywords": [
+    "ai-agents",
+    "coding-agents",
+    "permissions",
+    "guardrails",
+    "security",
+    "ast",
+    "cli"
+  ],
+  "type": "module",
+  "bin": {
+    "agntguard": "./dist/cli.js",
+    "agntguard-hook": "./dist/agents/antigravity-adapter.js"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "prebuild": "npm run clean",
+    "build": "tsc && chmod +x dist/agents/antigravity-adapter.js dist/cli.js dist/benchmark/runner/cli.js",
+    "test": "npm run build && node --test tests/*.test.ts",
+    "prebenchmark": "npm run build",
+    "benchmark": "node dist/benchmark/runner/cli.js"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "@typesafe-ai/sdk": "^0.6.0",
+    "picocolors": "^1.1.1",
+    "unbash": "^5.0.0",
+    "zod": "^3.23.0 || ^4.0.0"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "^2.0.18",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}
