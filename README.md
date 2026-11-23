@@ -1,144 +1,59 @@
 # AgntGuard
 
-AgntGuard is a permission engine for coding agents (Antigravity, OpenCode, Pi). It intercepts proposed tool executions, shell commands, and file operations before they run and checks them against a unified policy.
+Each coding agent has its own permission format and hook system, so switching between Antigravity, OpenCode, and Pi meant reconfiguring the same allowlists, blocked paths, and safety rules every time.
 
-Policy evaluation across harnesses is centralized into a binary verdict (`allow` / `restrict`), with shared credential management and decision telemetry.
+AgntGuard is a unified permission engine that lets you define those rules and workspace boundaries once. Thin host adapters intercept tool calls, shell commands, and file operations before execution and enforce the same `allow` or `restrict` verdict across every agent.
 
-## Architecture overview
+## Architecture
 
-```
-                      Proposed Tool / Action
-                                │
-                                ▼
-                       Host Agent Adapter
-                    (Antigravity, OpenCode, Pi)
-                                │
-                                ▼
-                    [AgntGuard PermissionEngine]
-                                │
-    ┌───────────────────────────┴───────────────────────────┐
-    ▼                                                       ▼
-[Tier 1: RulesPolicy (Deterministic)]          [Tier 2: RiskScoringPolicy (AI)]
-- Gate 1: Unmapped tool verdict                - Contextual semantic evaluation
-- Gate 2: 4-tier path & workspace boundary     - TypeSafe AI (jev-latest)
-- Gate 3: System/user regex + unbash AST       - Triggered only on unmapped gaps
-- Zero overhead (sub-millisecond)              - Timeout-bounded fail-safe
-    └───────────────────────────┬───────────────────────────┘
-                                │
-                                ▼
-                         Decision Envelope
-                         (allow | restrict)
-                                │
-                                ▼
-                       Host Agent Enforcement
-            auto mode -> deny  |  ask mode -> user prompt
+```mermaid
+flowchart TD
+    A["Agent tool call (Antigravity, OpenCode, Pi)"] --> B["Host Adapter"]
+    B --> C["Tier 1: Rules & Path Boundaries (<1ms)"]
+    C -->|Matched| E["Verdict: allow | restrict"]
+    C -->|Unmatched| D["Tier 2: TypeSafe AI (context + git state)"]
+    D --> E
+    E -->|auto mode| F["Allow or Deny"]
+    E -->|ask mode| G["Allow or Prompt User"]
 ```
 
-### Features
+Every tool call passes through the same pipeline:
 
-- Shell commands (`execute_command`) are parsed into an AST with `unbash`, so AgntGuard inspects atomic subcommands, redirects, environment assignments, and loop expansions.
-- Path boundaries use four tiers (`no_access`, `read_only`, `allowed`, and `outside` workspace boundary fallbacks) across file tools and shell redirections.
-- Tier 1 evaluates system invariants, path policies, and user rules in under a millisecond using regex and AST checks.
-- Tier 2 sends unmatched actions, along with budgeted conversation context and git working-tree state, to TypeSafe AI (`jev-latest`) to assess risk across `harmful`, `sensitive`, `opaque`, and `external` dimensions.
-- Tier 1 and workspace boundaries work out of the box without an external API key.
-- Adapters translate host agent payloads into a common context and enforce restrictions using each host's primitives.
+1. **Host adapters** normalize each agent's native tool payload into a common format and enforce the final verdict (`auto` denies restricted actions; `ask` prompts the user).
+2. **Tier 1 (deterministic)** checks path boundaries (`no_access`, `read_only`, `allowed`, and workspace boundaries) plus static rules in under a millisecond with no API key. Shell commands are parsed into an AST with `unbash` so chained commands and redirects are checked individually.
+3. **Tier 2 (contextual)** runs only when Tier 1 does not match. It sends the pending action, recent user requests, recent tool calls, workspace/git state, and active path rules to TypeSafe AI (`jev-latest`), bounded by a timeout with a configurable fallback.
 
-## Supported environments
+Both tiers use the same risk dimensions to produce a binary verdict (`safe` applies to Tier 2):
 
-- macOS and Linux (POSIX environments)
-- Windows via Windows Subsystem for Linux (WSL2) or dev containers
-- Node.js `>= 20` (`>= 22.18` or `24` recommended to run the TypeScript test suite)
+| Dimension | Meaning | Verdict |
+| --- | --- | --- |
+| `safe` | Routine development or explicitly authorized work | `allow` |
+| `harmful` | Destructive actions or unprompted workspace edits | `restrict` |
+| `sensitive` | Secrets, credentials, or protected path violations | `restrict` |
+| `opaque` | Obfuscated payloads or piped remote execution | `restrict` |
+| `external` | Unprompted network fetches, installs, or remote mutations | `restrict` |
 
-## Installation and onboarding
+## Example
 
-### 1. Install from a local checkout
+Suppose an agent tries to run a compound shell command or a command with no static rule:
 
-```bash
-git clone https://github.com/NMantegazza/agntguard.git
-cd agntguard
-./install.sh
-```
+1. Compound command with a sensitive file read:
+   ```bash
+   npm test && cat .env
+   ```
+   `unbash` splits the command into atomic subcommands. `npm test` passes, while `cat .env` hits the built-in `no_access` path rule in Tier 1 (`<1ms`, no API call) and returns `restrict`.
 
-`install.sh` builds the runtime if needed, installs production dependencies into `~/.agntguard/runtime`, and links the `agntguard` CLI launcher at `~/.local/bin/agntguard` (configurable via `AGNTGUARD_DIR` and `AGNTGUARD_BIN_DIR`).
+2. Ambiguous command without a static rule:
+   ```bash
+   rm -rf ./tmp-export
+   ```
+   No Tier 1 rule matches, so AgntGuard escalates to Tier 2 with the recent user request and git status. If the user asked to clean up a temporary export directory, Tier 2 returns `allow`; if the action is destructive or unrelated to the request, it returns `restrict`.
 
-### 2. Onboard your agents
+In `auto` mode, restricted actions are blocked before execution. In `ask` mode, the host agent prompts the user to approve or reject them.
 
-Run the interactive 3-step onboarding wizard to attach hooks for detected agents, choose an operating mode (`auto` or `ask`), and optionally configure Tier 2 credentials:
+## Evaluation
 
-```bash
-agntguard init
-```
-
-### 3. Uninstall
-
-```bash
-# Detach all agent hooks and remove ~/.agntguard and the CLI launcher
-./uninstall.sh
-
-# Detach hooks and remove runtime, while preserving config.json, credentials.json, and logs/
-./uninstall.sh --keep-config
-```
-
-## Operating modes
-
-AgntGuard supports two operating modes configured globally in `~/.agntguard/config.json`:
-
-- `auto` (default): Denies any restricted operation immediately without human intervention, suited for autonomous workflows and headless batch runs.
-- `ask`: Pauses tool execution and prompts the user for confirmation in interactive agent sessions.
-
-Switch modes at any time:
-
-```bash
-agntguard config set mode auto
-agntguard config set mode ask
-```
-
-## CLI reference
-
-### Lifecycle and agent hooks
-
-```bash
-agntguard init                      # Interactive 3-step onboarding wizard
-agntguard status                    # Agent hook health, mode, and policy summary
-agntguard enable [agent...] [--all] # Attach hook for antigravity, opencode, or pi
-agntguard disable [agent...] [--all]# Detach hook for target agent(s)
-```
-
-### Policy rules and path boundaries
-
-```bash
-# List user rules (add --system to expand built-in system rules)
-agntguard rule list [--tool <tool>] [--system]
-
-# Add an allow rule for a trusted command
-agntguard rule add --list allow --pattern "^docker compose ps$"
-
-# Add a restrict rule for sensitive file reads
-agntguard rule add --tool read_file --list restrict --pattern "(^|/)\.secret_keys($|\.)" --dimension sensitive
-
-# Remove a user rule
-agntguard rule remove --list allow --pattern "^docker compose ps$"
-
-# Inspect or update Gate 2 path policies (no_access | read_only | allowed)
-agntguard path list [--system]
-agntguard path add --list read_only --pattern "docs(?:/.*)?"
-agntguard path remove --list read_only --pattern "docs(?:/.*)?"
-```
-
-### Configuration and credentials
-
-```bash
-agntguard config get [key]          # Inspect full config or a specific key
-agntguard config set <key> <value>  # Update a whitelisted configuration key
-agntguard config reset [--yes]      # Reset configuration to defaults
-
-agntguard key set [key]             # Store TypeSafe AI API key (~/.agntguard/credentials.json, mode 0600)
-agntguard key remove [--yes]        # Delete stored credentials
-```
-
-## Benchmarks and evaluation
-
-AgntGuard includes an isolated Tier 2 benchmark suite of 104 scenarios (`benchmarks/scenarios/`) testing contextual risk decisions against ground truth (`allow` vs `restrict` across `safe`, `harmful`, `sensitive`, `opaque`, and `external` categories).
+AgntGuard includes an isolated Tier 2 benchmark suite of 104 scenarios (`benchmarks/scenarios/`) testing contextual risk decisions against ground truth (`allow` vs `restrict` across `safe`, `harmful`, `sensitive`, `opaque`, and `external` categories). In this setup, false positives represent unnecessary user friction and false negatives represent missed risks.
 
 Latest run with TypeSafe AI (`jev-latest`, Tier 2 isolated):
 
@@ -157,9 +72,46 @@ Run the suite locally:
 npm run benchmark
 ```
 
-## Testing
+## Project layout
 
-Run the full automated test suite (TypeScript build plus unit, integration, and install/uninstall tests):
+- `src/core/`: permission engine, Tier 1 rules and AST analyzer, Tier 2 risk scoring policy, runner, and telemetry logger
+- `src/agents/`: host adapters for Antigravity, OpenCode, and Pi
+- `src/providers/`: Tier 2 model providers (`typesafe-provider`, `mock-provider`)
+- `src/context/`: git working-tree context collection
+- `src/benchmark/`: state projectors and benchmark runner
+- `src/cli/`: interactive onboarding (`init`) and policy management commands
+- `tests/`: unit, integration, adapter, and install/uninstall tests
+
+## Quick start
+
+Requires macOS, Linux, or WSL2 and Node.js `>= 20` (`>= 22.18` or `24` recommended for the TypeScript test suite).
+
+```bash
+git clone https://github.com/NMantegazza/agntguard.git
+cd agntguard
+./install.sh
+agntguard init
+```
+
+`install.sh` installs the runtime into `~/.agntguard/runtime` and links the CLI at `~/.local/bin/agntguard` (configurable via `AGNTGUARD_DIR` and `AGNTGUARD_BIN_DIR`). `agntguard init` attaches hooks for detected agents, sets the operating mode, and optionally configures a Tier 2 API key.
+
+To remove AgntGuard, run `./uninstall.sh` (or `./uninstall.sh --keep-config` to preserve config, credentials, and logs).
+
+### Common commands
+
+```bash
+agntguard status                                              # Hook health, mode, and policy summary
+agntguard enable [agent...] [--all]                           # Attach hooks (antigravity, opencode, pi)
+agntguard disable [agent...] [--all]                          # Detach hooks
+agntguard config set mode <auto|ask>                          # Switch operating mode
+agntguard rule list [--tool <tool>] [--system]                # Inspect rules
+agntguard rule add --list allow --pattern "^docker compose ps$"
+agntguard path list [--system]                                # Inspect path boundaries
+agntguard path add --list read_only --pattern "docs(?:/.*)?"
+agntguard key set [key]                                       # Store TypeSafe AI key (~/.agntguard/credentials.json, 0600)
+```
+
+### Tests
 
 ```bash
 npm test
